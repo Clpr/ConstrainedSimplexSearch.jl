@@ -24,7 +24,7 @@ $$
 To install the required dependencies, run:
 
 ```bash
-pkg> add ConstrainedSimplexSearch
+pkg> add ConstrainedSimplexSearch # not registered in the Registry yet
 
 # or directly install from GitHub
 pkg> add "https://github.com/Clpr/ConstrainedSimplexSearch.jl.git#main"
