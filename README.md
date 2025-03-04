@@ -27,6 +27,7 @@ To install the required dependencies, run:
 pkg> add ConstrainedSimplexSearch
 
 # or directly install from GitHub
+pkg> add "https://github.com/Clpr/ConstrainedSimplexSearch.jl.git#main"
 ```
 
 ## Usage
