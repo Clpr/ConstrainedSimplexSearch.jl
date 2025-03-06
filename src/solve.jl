@@ -120,6 +120,7 @@ function solve(
 
     x0    ::AbstractVector = boxcenter(mp),
     radius::F64      = 0.5,
+    towards::Symbol  = :upper, # or :lower, the direction of simplex init
 
     verbose   ::Bool = false, # print the progress
     showevery ::Int  = 1,     # print the progress every `showevery` iterations
@@ -153,16 +154,22 @@ function solve(
 
     
     # step: initialize a simplex
-    spl = initsimplex(Point{N}(x0), mp, radius=radius) ::Vec{Point{N}}
-    @assert length(spl) == N+1 "invalid simplex initialization: $(length(spl))"
-
-    # malloc: iteration trace indicators
-    lastRes = Dict(
-        :fo       => Inf,
-        :edgeLen  => maxedgelen(spl),
-        :ftrace   => F64[],
-        :centroid_feasibility => false,
+    spl ::Vec{Point{N}} = initsimplex(
+        Point{N}(x0), 
+        mp, 
+        radius  = radius, 
+        towards = towards,
     )
+
+    # malloc: intermediate results
+    fvalsAll = fill(Inf, N+1)
+    gvalsAll = [zeros(P) for _ in 1:N+1]
+    hvalsAll = [zeros(Q) for _ in 1:N+1]
+    feasAll  = fill(false, N+1)
+    splLoc   = :interior
+    isort    = Vector{Int}(undef, N+1)
+
+    flagConverged = false
 
     # iteration
     for t in 1:maxiter
@@ -172,15 +179,20 @@ function solve(
         #       current simplex
         # ----------------------------------------------------------------------
         # eval the constraints at the simplex vertexes
-        gvalsAll = V64[mp.g(xi) for xi in spl]
-        hvalsAll = V64[mp.h(xi) for xi in spl]
+        for i in 1:N+1
+            gvalsAll[i] .= mp.g(spl[i]) ::AbstractVector
+            hvalsAll[i] .= mp.h(spl[i]) ::AbstractVector
 
-        # check feasibility of all vertexes, determine the status of the simplex
-        feasAll = Bool[
-            isfeasible(xi, gvals, hvals, mp.lb, mp.ub, δ)
-            for (xi, gvals, hvals) in zip(spl, gvalsAll, hvalsAll)
-        ]
-        splLoc ::Symbol = if all(feasAll)
+            # check admissibility of the vertex
+            feasAll[i] = isadmissible(
+                spl[i], 
+                gvalsAll[i], 
+                hvalsAll[i], 
+                mp.lb, mp.ub, 
+                δ
+            )
+        end
+        splLoc = if all(feasAll)
             :interior
         elseif any(feasAll)
             :boundary
@@ -191,8 +203,9 @@ function solve(
         end
 
         # eval the functions at all feasible simplex vertexes (in case of the
-        # boundary simplex
-        fvalsAll = fill(NaN, N+1)
+        # boundary simplex)
+        fmaxAdmissible = NaN
+
         if splLoc == :interior
             # the same as the standard Nelder-Mead simplex search
             for i in 1:N+1
@@ -234,119 +247,164 @@ function solve(
                     )
                 end
             end # i
+            # finally, save this value for the reflection point
+            fmaxAdmissible = fmax
         end
 
 
         # ----------------------------------------------------------------------        
         # sort the simplex vertexes, and determine the best, worst, 2nd worst
-        isort = sortperm(fvalsAll)
+        isort .= sortperm(fvalsAll)
+
         xw  = spl[isort[end]]   # worst
 
-        fb  = fvalsAll[isort[1]]
-        fw  = fvalsAll[isort[end]]
-        f2w = fvalsAll[isort[end-1]]
+        fb  = fvalsAll[isort[1]]     # best
+        fw  = fvalsAll[isort[end]]   # worst
+        f2w = fvalsAll[isort[end-1]] # 2nd worst
+
+        @assert all(!isnan, [fb,fw,f2w]) "NaN found in the function values"
+
 
         # compute the centroid of the simplex except the worst vertex
         xo = centroid(spl[isort[1:end-1]])
-        fo = mp.f(xo)
 
         # ----------------------------------------------------------------------
         # Choose one move from: reflection, expansion, contraction, shrinkage
 
         # must-do: find the reflection point of the worst
-        xr = reflect(xo, xw, α)
-        fr = mp.f(xr)
+        # must-do: restrict the reflection point to the box boundaries, to avoid
+        #          the potential undefined behvaior of the objective function.
+        # caution: the reflection point should respect the location status of
+        #          the current simplex (interior, exterior, or boundary)
+        xr = clamp.(reflect(xo, xw, α), mp.lb, mp.ub)
+        fr = if splLoc == :interior
+            mp.f(xr)
+        elseif splLoc == :exterior
+            cv(
+                xr,
+                mp.g(xr),
+                mp.h(xr),
+                mp.lb,
+                mp.ub,
+                δ,
+                R,
+            )
+        elseif splLoc == :boundary
+            _gval = mp.g(xr)
+            _hval = mp.h(xr)
+            _flag = isadmissible(xr, _gval, _hval, mp.lb, mp.ub, δ)
+            if _flag
+                mp.f(xr)
+            else
+                fmaxAdmissible + cv(xr, _gval, _hval, mp.lb, mp.ub, δ, R)
+            end
+        else
+            error("unreachable code: simplex location. what happened?")
+        end
+
+        # logging the chosen move this iteration
+        chosenMove = :reflection
 
         # branching
         if fb <= fr < f2w
             # accept the reflection point (to replace the worst)
             spl[isort[end]] = xr
+
+            chosenMove = :reflection
         elseif fr < fb
             # get: expansion point (try more radical move)
-            xe = expand(xo, xr, γ)
+            xe = clamp.(expand(xo, xr, γ), mp.lb, mp.ub)
             fe = mp.f(xe)
             if fe < fr
                 # accept the expansion point
                 spl[isort[end]] = xe
+
+                chosenMove = :expansion
             else
                 # accept the reflection point (no radical move but still good)
                 spl[isort[end]] = xr
+
+                chosenMove = :reflection
             end
         elseif f2w <= fr <= fw
             # get: OUTSIDE contraction point
-            xc_out = contract_out(xo, xr, ρout)
+            xc_out = clamp.(contract_out(xo, xr, ρout), mp.lb, mp.ub)
             fc_out = mp.f(xc_out)
             if fc_out < fw
                 # accept the outside contraction point
                 spl[isort[end]] = xc_out
+
+                chosenMove = :outside_contraction
             else
                 # shrink the simplex towards the best
                 shrink!(spl, isort[1], σ)
+
+                # rebound the simplex vertexes to the box boundaries (if shrink)
+                rebound!(spl, mp.lb, mp.ub)
+
+                chosenMove = :shrink
             end
         elseif fr > fw
             # get: INSIDE contraction point
-            xc_in = contract_in(xo, xw, ρin)
+            xc_in = clamp.(contract_in(xo, xw, ρin), mp.lb, mp.ub)
             fc_in = mp.f(xc_in)
             if fc_in < fw
                 # accept the inside contraction point
                 spl[isort[end]] = xc_in
+
+                chosenMove = :inside_contraction
             else
                 # shrink the simplex towards the best
                 shrink!(spl, isort[1], σ)
+
+                rebound!(spl, mp.lb, mp.ub)
+
+                chosenMove = :shrink
             end
         else
-            error("unreachable code. what happened?")
+            @info "Diagnostic:" f_reflection=fr f_best=fb f_worst=fw
+            error("unreachable code: move selection. what happened?")
         end # if branching
-
-        # rebound the simplex vertexes to the box boundaries
-        rebound!(spl, mp.lb, mp.ub)
         
         # error statistics
-        maxEdgeLen = maxedgelen(spl)
-        maxFvalGap = abs(fw - fb)
-        lastRes[:fo]      = fo
-        lastRes[:edgeLen] = maxEdgeLen
-        push!(lastRes[:ftrace], fo)
+        maxEdgeLen = maxedgelen(spl) # wrt: xtol
+        maxFvalGap = abs(fw - fb)    # wrt: ftol
 
         if verbose & (t % showevery == 0)
             @printf(
-                "iter = %d, status = %s, f ∈ (%.2e, %.2e), f(centroid) = %.4e",
-                t, splLoc, fb, fw, fo
+                "iter = %d, simplex status = %s, f ∈ (%.2e, %.2e)",
+                t, splLoc, fb, fw
             )
             @printf(
-                ", |f(worst)-f(best)| = %.2e, max(edge) = %.2e\n",
-                maxFvalGap, maxEdgeLen
+                ", gap(f) = %.2e, max|edge| = %.2e, move: %s\n",
+                maxFvalGap, maxEdgeLen, chosenMove
             )
         end
 
-        status_centroid = isfeasible(xo, mp, δ)
-        lastRes[:centroid_feasibility] = status_centroid
-
         # convergence check
         if (maxFvalGap < ftol) | (maxEdgeLen < xtol)
+            flagConverged = true
             if verbose
                 @printf(
-                    "Converged: iter = %d, status = %s, centroid feasible = %s, ",
-                    t, splLoc, status_centroid,
+                    "Converged: iter = %d, simplex status = %s, ",
+                    t, splLoc,
                 )
                 @printf(
-                    "f ∈ (%.2e, %.2e), f(centroid) = %.4e, max(edge) = %.2e\n",
-                    fb, fw, fo, maxEdgeLen
+                    "f ∈ (%.2e, %.2e), max|edge| = %.2e\n",
+                    fb, fw, maxEdgeLen
                 )
-                status_centroid || @warn "centroid is infeasible"
             end
             break
         elseif t == maxiter
             if verbose
                 @printf(
-                    "reached maxiter: iter = %d, status = %s, centroid feasible = %s, ",
-                    t, splLoc, status_centroid,
+                    "reached maxiter: iter = %d, simplex status = %s, ",
+                    t, splLoc, 
                 )
                 @printf(
-                    "f ∈ (%.2e, %.2e), f(centroid) = %.4e, max(edge) = %.2e\n",
-                    fb, fw, fo, maxEdgeLen
+                    "f ∈ (%.2e, %.2e), max(edge) = %.2e\n",
+                    fb, fw, maxEdgeLen
                 )
-                status_centroid || @warn "centroid is infeasible"
             end
             break
         else
@@ -356,11 +414,27 @@ function solve(
 
     end # t
 
+
+    # post-iter: decide which vertex to return
+    #=
+    rule: check all N+1 vertexes. return the best admissible one among them.
+    =#
+    xOpt, fOpt = if any(feasAll)
+        # if any feasible vertex or centroid, return the best admissible one
+        _f, _i = findmin(fvalsAll[feasAll])
+        spl[feasAll][_i], _f
+    else
+        # if no admissible vertex or centroid, return the centroid with a NaN
+        # (because in this exterior status, sthe objective function is not
+        # defined and its value was not stored, so nothing to return)
+        centroid(spl), NaN
+    end
+
     return (
-        x = centroid(spl),
-        f = lastRes[:fo],
-        ftrace = lastRes[:ftrace],
-        centroid_feasibility = lastRes[:centroid_feasibility],
+        x = xOpt,
+        f = fOpt,
+        converged  = flagConverged,
+        admissible = any(feasAll),
     )
 end # solve
 

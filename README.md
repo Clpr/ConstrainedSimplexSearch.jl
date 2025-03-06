@@ -13,11 +13,20 @@ $$
 \end{align}
 $$
 
+where
+- $\text{lb}_k$ and $\text{ub}_k$ define a box/rectangular space which is the _feasible space_ of $x$,
+where $(g,h)$ must be well-defined everywhere, which means no NaN or $\pm$ Inf are allowed in the returns.
+- $(g,h)$ functions further characterize the _admissible space_ within the box feasible space. The admissible space is a subset of the feasible space.
+- The objective function $f(x)$ is only required to be well-defined in the admissible space, which means that the returned value has physical meanings in the admissible space. However, due to technical reason of doing reflections, the objective function should still return a (large enough or Inf) real non-NaN value in the feasible but non-admissible space.
+
+
+
 ## Features
 
 - Implements the Constrained Simplex Search algorithm
-- Handles generic non-linear constraints using penalty which guides the simplex to move to the feasible region.
-
+- Strictly bounds the searching within a bounded box/rectangular feasible space
+- Handles generic non-linear constraints using penalty which guides the simplex to move towards the admissible space
+- Can reach exact boundary points but not arbitrarily approaching it
 
 ## Installation
 
@@ -52,17 +61,28 @@ which has a known corner solution $(0,0)$.
 ```julia
 import ConstrainedSimplexSearch as css
 
-# Objective function: receives an N-vector and returns a scalar
-function f(x::AbstractVector)
-    return sum(x .^ 2)
-end
+
+# Define a box/rectangular feasible space
+lb = [-2.0, -3.0]
+ub = [ 1.0,  5.0]
+
+# a convenience function to check if a point is in or on the box space
+inbox(x ; lb = lb, ub = ub) = all(lb .<= x .<= ub)
 
 # Inequality constraint g(x): receives an N-vector, returns a P-scalar
 function g(x::AbstractVector)
-    return [
-        - x[1]       , # x >= 0
-        x[1]^2 - x[2], # y >= x^2
-    ]
+    # for illustrative purpose, this function is undefined outside the box
+    if inbox(x)
+        return [
+            - x[1]       , # x >= 0
+            x[1]^2 - x[2], # y >= x^2
+        ]
+    else
+        return [
+            NaN,
+            NaN,
+        ]
+    end
 end
 
 # Equality constraint h(x): receives an N-vector, returns a Q-vector
@@ -70,9 +90,25 @@ function h(x::AbstractVector)
     return []
 end
 
-# Define a box/rectangular region for searching
-lb = [-2.0, -3.0]
-ub = [1.0, 5.0]
+
+# Objective function: receives an N-vector and returns a scalar
+# for illustrative purpose, the function is only well-defined in the admissible space
+# but can return a large value in the feasible but non-admissible space
+function f(x::AbstractVector)
+    flag_admis = all(g(x) .<= 0.0) & all(abs.(h(x)) .< 1E-3)
+	if inbox(x)
+    	if flag_admis
+			return sum(x .^ 2)
+        else
+            # returns arbitrary value in the feasible but non-admissible space
+        	return 114514.0
+        end
+    else
+        # undefined outside the box
+    	return NaN
+    end
+end
+
 
 # Define the minimization problem
 mp = css.MinimizeProblem(
@@ -106,13 +142,16 @@ mp = css.MinimizeProblem(
 )
 
 # what are included in the result (a named tuple)
-res.x ::SVector{N,Float64}     # the final simplex's centroid point
-res.f ::Float64                # the objective function value at the centroid
-res.ftrace::Vector{Float64}    # the trace of f(centroid) by iteration
-res.centroid_feasibility::Bool # if the final point is feasible wrt (g, h, lb, ub)
-
+res.x ::SVector{N,Float64}     # the searched optimal point
+res.f ::Float64                # the objective function value
+res.converged::Bool            # if the algorithm converged
+res.admissible::Bool           # if the returned result is admissible
 ```
-The algorithm should converged at iteration 31, at approximately $(0.024,0.028)$, with the objective function value about $0.0014$. One can further improve the solution precision by reducing `ftol` and `xtol`.
+
+Users can test other initial points including some special points:
+- $(-2.0,-3.0)$: bottom left corner
+- $(1.0,5.0)$: top right corner
+- $(0.0,0.0)$: the true solution
 
 **Notes**
 1. The keyword argument `x0::AbstractVector=` specifies a point where the simplex is initialized. Such as point must be interior regarding the box constraints `[lb,ub]`, but not necessary to satisfy the inequality constraint $g(x)$ and equality constraints $h(x)$.
@@ -149,3 +188,41 @@ in which the derivatives are oscilliating or unstable across the space
 ## License
 
 MIT license
+
+
+## Example: Collateral constraint
+
+Consider the following household problem who enjoys consumption $c$ and housing wealth $h$:
+$$
+v(b,h,p) = \max_{c,b',h'} \frac{[c^\alpha h^\alpha]^{1-\gamma}}{1-\gamma} + \beta \mathbb{E}\{ v(b',h',p') \} \\
+~\\
+c + p h' + (1+r)b' = b + h^\alpha + ph \\
+c \geq 0, h' \geq 0 \\
+b' \leq \theta p h' \\
+~\\
+p \sim Uniform[0.5,1.5] \\
+b,h \in [\underline{b},\bar{b}]\times [\underline{h},\bar{h}]
+$$
+
+In this simplified problem, due to the stochasticity of housing price $p$,
+the admissible space of $(c,b',h')$ is state-dependent. A conventional method 
+to handle this problem is endogeneous grid, which converts the state space to the 
+total value of the housing wealth.
+However, this is less intuitive in computation and often fails if there is non-linearity
+in the constraint (e.g. a threshold options to sell the house).
+
+And, if we use classic gradient-based solvers such as interior point methods,
+then it is unavoidable that many solvers would try evaluating the Laganrian
+in the non-admissible space. There are two issues:
+1. The gradient/Hessian approximation in the neighborhood of the admissible boundary
+is severely biased, even if we force the returned values to be a
+very negative values (e.g. $1.919810\times 10^{20}$)
+2. The solver cannot exactly stop at the boundary where $b'=\theta p h'$ exactly, while
+this exact bindingness may fall in our interests (e.g. checking the behvaior of the binding borrowers)
+
+In this case, the constrained simplex method implemented in this package works well.
+
+
+
+
+

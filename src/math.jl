@@ -12,7 +12,7 @@ export contract_in
 export shrink
 
 export cv
-export isfeasible
+export isadmissible
 
 
 
@@ -197,10 +197,14 @@ function cv(
 )::F64 where {N}
     res = 0.0    
     if length(gvals) > 0
-        res += _cv_g(gvals)
+        _val = _cv_g(gvals)
+        @assert !isnan(_val) "NaN found in g(x) <=0 constraint function"
+        res += _val
     end
     if length(hvals) > 0
-        res += _cv_h(hvals, δ, R)
+        _val = _cv_h(hvals, δ, R)
+        @assert !isnan(_val) "NaN found in h(x) == 0 constraint function"
+        res += _val
     end
     res += _cv_lub(x, lb, ub)
     return res
@@ -217,7 +221,7 @@ function cv(x::Point{N}, mp::MinimizeProblem{N,P,Q})::F64 where {N,P,Q}
     return cv(x, mp.g(x), mp.h(x), mp.lb, mp.ub, mp.δ, mp.R)
 end
 # ------------------------------------------------------------------------------
-function isfeasible(
+function isadmissible(
     x    ::Point{N},
     gvals::AbsV,
     hvals::AbsV,
@@ -238,17 +242,17 @@ function isfeasible(
 end
 # ------------------------------------------------------------------------------
 """
-    isfeasible(x::Point{N}, mp::MinimizeProblem{N,P,Q},δ::Real)::Bool
+    isadmissible(x::Point{N}, mp::MinimizeProblem{N,P,Q},δ::Real)::Bool
 
 Check if point `x` is feasible w.r.t. the constraints of the minimization
 problem `mp`.
 """
-function isfeasible(
+function isadmissible(
     x::Point{N}, 
     mp::MinimizeProblem{N,P,Q}, 
     δ::Real
 )::Bool where {N,P,Q}
-    return isfeasible(x, mp.g(x), mp.h(x), mp.lb, mp.ub, δ)
+    return isadmissible(x, mp.g(x), mp.h(x), mp.lb, mp.ub, δ)
 end
 # ------------------------------------------------------------------------------
 

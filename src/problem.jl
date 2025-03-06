@@ -21,10 +21,10 @@ lb_k <= x_k <= ub_k, k = 1,...,N
 
 where:
 - `f` is the objective function
-- `g` is the vector of inequality constraint functions
-- `h` is the vector of equality constraint functions
-- `lb` is the lower bound vector
-- `ub` is the upper bound vector
+- `g` is the inequality constraint functions, defining the admissble space
+- `h` is the equality constraint functions, defining the admissble space
+- `lb` is the lower bound vector of the feasible space
+- `ub` is the upper bound vector of the feasible space
 
 ## Constraint penalty parameters
 - `δ` is the tolerance for the equality constraint violation
@@ -49,10 +49,12 @@ Create a new MinimizeProblem instance.
 
 ### Arguments
 - `f::Function`: the objective function, receives a N-dim abstract vector &
-returns a scalar
+returns a scalar. Must be (at least) well defined in the box-constrained space.
 - `g::Function`: the inequality constraint function, receives a N-dim 
-abstract vector and returns a P-dim abstract vector
-- `h::Function`: the equality constraint function, receives a N-dim abstract
+abstract vector and returns a P-dim abstract vector. Must be well defined in the
+box-constrained space.
+- `h::Function`: the equality constraint function, receives a N-dim abstract.
+Must be well defined in the box-constrained space.
 vector and returns a Q-dim abstract vector
 - `n::Int`: the dimensionality of the problem, N
 - `p::Int`: the number of inequality constraints, P
