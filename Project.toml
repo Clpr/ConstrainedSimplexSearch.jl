@@ -1,7 +1,7 @@
 name = "ConstrainedSimplexSearch"
 uuid = "18a5e75d-c893-44ea-8c57-0eddfae82f21"
 authors = ["Clpr <zhao1tian1hao1@outlook.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
