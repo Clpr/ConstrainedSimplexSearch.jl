@@ -144,7 +144,22 @@ function maxedgelen(spl::Vec{Point{N}})::F64 where {N}
     end
     return lenMax
 end
+# ------------------------------------------------------------------------------
+"""
+    rebound!(spl::Vec{Point{N}}, lb::Point{N}, ub::Point{N})::Nothing where {N}
 
+Rebound all points in the simplex `spl` within the box constraints `lb` and `ub`
+"""
+function rebound!(
+    spl::Vec{Point{N}},
+    lb::Point{N},
+    ub::Point{N},
+)::Nothing where {N}
+    for i in 1:N+1
+        spl[i] = clamp.(spl[i], lb, ub)
+    end
+    return nothing
+end
 
 
 

@@ -298,12 +298,12 @@ function solve(
             error("unreachable code. what happened?")
         end # if branching
 
-
+        # rebound the simplex vertexes to the box boundaries
+        rebound!(spl, mp.lb, mp.ub)
         
         # error statistics
         maxEdgeLen = maxedgelen(spl)
         maxFvalGap = abs(fw - fb)
-        Δfo      = abs(fo - lastRes[:fo])
         lastRes[:fo]      = fo
         lastRes[:edgeLen] = maxEdgeLen
         push!(lastRes[:ftrace], fo)
