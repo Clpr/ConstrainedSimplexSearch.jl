@@ -195,14 +195,16 @@ MIT license
 Consider the following household problem who enjoys consumption $c$ and housing wealth $h$:
 
 $$
-v(b,h,p) = \max_{c,b',h'} \frac{[c^\alpha h^\alpha]^{1-\gamma}}{1-\gamma} + \beta \mathbb{E}\{ v(b',h',p') \} \\
-~\\
-c + p h' + (1+r)b' = b + h^\alpha + ph \\
-c \geq 0, h' \geq 0 \\
-b' \leq \theta p h' \\
-~\\
-p \sim Uniform[0.5,1.5] \\
-b,h \in [\underline{b},\bar{b}]\times [\underline{h},\bar{h}]
+\begin{aligned}
+& v(b,h,p) = \max_{c,b',h'} \frac{[c^\alpha h^\alpha]^{1-\gamma}}{1-\gamma} + \beta \mathbb{E}\{ v(b',h',p') \} \\
+& ~\\
+& c + p h' + (1+r)b' = b + h^\alpha + ph \\
+& c \geq 0, h' \geq 0 \\
+& b' \leq \theta p h' \\
+& ~\\
+& p \sim Uniform[0.5,1.5] \\
+& b,h \in [\underline{b},\bar{b}]\times [\underline{h},\bar{h}]
+\end{aligned}
 $$
 
 In this simplified problem, due to the stochasticity of housing price $p$,
