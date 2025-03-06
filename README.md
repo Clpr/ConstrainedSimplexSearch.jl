@@ -193,6 +193,7 @@ MIT license
 ## Example: Collateral constraint
 
 Consider the following household problem who enjoys consumption $c$ and housing wealth $h$:
+
 $$
 v(b,h,p) = \max_{c,b',h'} \frac{[c^\alpha h^\alpha]^{1-\gamma}}{1-\gamma} + \beta \mathbb{E}\{ v(b',h',p') \} \\
 ~\\
