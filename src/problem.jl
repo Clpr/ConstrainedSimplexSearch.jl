@@ -1,137 +1,109 @@
-# Defining the problem instance
-
-
+# Problem definition
 
 
 # ------------------------------------------------------------------------------
-"""
-    MinimizeProblem{N,P,Q}
-
-Minimization problem definition:
-
-min_x f(x):R^N -> R
-
-s.t. 
-
-g_i(x) <= 0, i = 1,...,P
-
-h_j(x) = 0, j = 1,...,Q
-
-lb_k <= x_k <= ub_k, k = 1,...,N
-
-where:
-- `f` is the objective function
-- `g` is the inequality constraint functions, defining the admissble space
-- `h` is the equality constraint functions, defining the admissble space
-- `lb` is the lower bound vector of the feasible space
-- `ub` is the upper bound vector of the feasible space
-
-## Constraint penalty parameters
-- `δ` is the tolerance for the equality constraint violation
-- `R` is the penalty factor for the equality constraint violation
-
-## Simplex search parameters
-- `α` is the reflection factor, (0,∞)
-- `γ` is the expansion factor, (1,∞)
-- `ρout` is the outside contraction factor, (0,0.5]
-- `ρin` is the inside contraction factor, (0,0.5]
-- `σ` is the shrink factor, (0,1)
-
-
-## Constructor
-
-    MinimizeProblem(
-        f, g, h, n, p, q; 
-        lb=, ub=, δ=, R=, α=, γ=, ρout=, ρin=, σ=
-    )
-
-Create a new MinimizeProblem instance.
-
-### Arguments
-- `f::Function`: the objective function, receives a N-dim abstract vector &
-returns a scalar. Must be (at least) well defined in the box-constrained space.
-- `g::Function`: the inequality constraint function, receives a N-dim 
-abstract vector and returns a P-dim abstract vector. Must be well defined in the
-box-constrained space.
-- `h::Function`: the equality constraint function, receives a N-dim abstract.
-Must be well defined in the box-constrained space.
-vector and returns a Q-dim abstract vector
-- `n::Int`: the dimensionality of the problem, N
-- `p::Int`: the number of inequality constraints, P
-- `q::Int`: the number of equality constraints, Q
-
-### Optional Arguments
-- `lb::AbsV`: the lower bound vector, default is zeros(n)
-- `ub::AbsV`: the upper bound vector, default is one(n)
-- `δ::Real`: the tolerance for the equality constraint violation, default is
-1E-5
-- `R::Real`: the penalty factor for the equality constraint violation, 
-default is 1.0
-- `α::Real`: the reflection factor, (0,∞), default is 1.0
-- `γ::Real`: the expansion factor, (1,∞), default is 2.0
-- `ρout::Real`: the outside contraction factor, (0,0.5], default is 0.5
-- `ρin::Real`: the inside contraction factor, (0,0.5], default is 0.5
-- `σ::Real`: the shrink factor, (0,1), default is 0.5
-
-
-
-## Example
-```julia
-css = include("src/ConstrainedSimplexSearch.jl")
-
-# create an unconstrained minimization problem
-mp = css.MinimizeProblem(
-    x -> sum(x .^ 2), 
-    x -> [], 
-    x -> [], 
-    3, 0, 0
+const DEFAULT_HYPERPARAM = Dict{String,Float64}(
+    "reflection_factor"          => 1.0,
+    "expansion_factor"           => 1.5,
+    "contraction_factor_outside" => 0.4,
+    "contraction_factor_inside"  => 0.4,
+    "shrink_factor"              => 0.5,
 )
 
 
-
-
-```
+# ------------------------------------------------------------------------------
 """
-mutable struct MinimizeProblem{N,P,Q}
-    f ::Function # R^N -> R
-    g ::Function # R^N -> R^P
-    h ::Function # R^N -> R^Q
-    lb::Point{N} # control lower bound
-    ub::Point{N} # control upper bound
+    ConstrainedSimplexSearch
 
-    # --------------------------------------------------------------------------
-    function MinimizeProblem(
-        f::Function, # min f(x), x ∈ R^N
-        g::Function, # g(x) <= 0, i = 1,...,P
-        h::Function, # h(x) == 0, j = 1,...,Q
-        n::Int, # user-report dimensionality of the problem
-        p::Int, # number of inequality constraints
-        q::Int; # number of equality constraints
+Describe a box-bounded optimization problem with nonlinear inequality
+constraints. This type is the central problem object used by `optimize`, the
+initial-simplex builders, and the optional `Optim.jl` extension.
 
-        lb ::AbsV = zeros(n),
-        ub ::AbsV = ones(n),
-    )
-        @assert n > 0 "dimensionality of the problem must be positive: $n"
-        @assert n == length(lb) == length(ub) "dimensionality mismatch: lb,ub"
-        @assert p >= 0 "# of inequality constraints must be non-negative: $p"
-        @assert q >= 0 "# of equality constraints must be non-negative: $q"
-        @assert all(isfinite, lb) "lb must be finite"
-        @assert all(isfinite, ub) "ub must be finite"
-        @assert all(lb .<= ub) "lb must be less than or equal to ub"
+The constraint callback must return `nconstraints` finite values written as
+`g(c) <= 0` and must be defined throughout the box. The objective callback only
+needs to be defined at admissible points because the solver always checks the
+constraints before calling it.
 
-        new{n,p,q}( f, g, h, Point{n}(lb), Point{n}(ub) )
-    end
+Use the keyword constructor rather than constructing fields directly so bounds,
+dimensions, and callbacks are validated and the default hyperparameters are
+copied for the new problem.
+"""
+mutable struct ConstrainedSimplexSearch{F,G}
+    ncontrols::Int
+    nconstraints::Int
+    function_objective::F
+    function_constraints::G
+    lower_bounds::Vector{Float64}
+    upper_bounds::Vector{Float64}
+    hyperparam::Dict{String,Float64}
 end
 
 
+# ------------------------------------------------------------------------------
+"""
+    ConstrainedSimplexSearch(;
+        ncontrols,
+        nconstraints,
+        function_objective,
+        function_constraints,
+        lower_bounds,
+        upper_bounds,
+    )
+
+Construct a validated inequality-constrained optimization problem. This
+constructor exists to establish the dimensional and finite-bound assumptions
+used by every simplex builder and solver evaluation.
+
+`function_objective(c)` must return one finite real value whenever `c` is
+admissible. `function_constraints(c)` must return exactly `nconstraints` finite
+values at every point in the box. Each lower bound must be strictly below its
+matching upper bound so all controls have a searchable interval.
+"""
+function ConstrainedSimplexSearch(;
+    ncontrols::Int,
+    nconstraints::Int,
+    function_objective::F,
+    function_constraints::G,
+    lower_bounds::AbstractVector,
+    upper_bounds::AbstractVector,
+) where {F<:Function,G<:Function}
+    ncontrols > 0 || throw(ArgumentError("ncontrols must be positive."))
+    nconstraints >= 0 || throw(ArgumentError("nconstraints must be non-negative."))
+    length(lower_bounds) == ncontrols ||
+        throw(DimensionMismatch("lower_bounds must have length ncontrols."))
+    length(upper_bounds) == ncontrols ||
+        throw(DimensionMismatch("upper_bounds must have length ncontrols."))
+
+    lower = Vector{Float64}(lower_bounds)
+    upper = Vector{Float64}(upper_bounds)
+    all(isfinite, lower) || throw(ArgumentError("lower_bounds must be finite."))
+    all(isfinite, upper) || throw(ArgumentError("upper_bounds must be finite."))
+    all(lower .< upper) ||
+        throw(ArgumentError("each lower bound must be strictly smaller than its upper bound."))
+
+    return ConstrainedSimplexSearch{F,G}(
+        ncontrols,
+        nconstraints,
+        function_objective,
+        function_constraints,
+        lower,
+        upper,
+        copy(DEFAULT_HYPERPARAM),
+    )
+end
 
 
 # ------------------------------------------------------------------------------
-function Base.show(io::IO, mp::MinimizeProblem{N,P,Q}) where {N,P,Q}
-    println(io, "MinimizeProblem{N=$N,P=$P,Q=$Q}")
-    println(io, " min_{x ∈ R^$N} f(x)")
-    println(io, " s.t.")
-    println(io, " g(x) <= 0, i = 1,...,$P")
-    println(io, " h(x) == 0, j = 1,...,$Q")
-    println(io, " lb <= x <= ub")
+"""
+    Base.show(io, prob::ConstrainedSimplexSearch)
+
+Print a compact mathematical summary of a problem. This display is used in the
+REPL to make dimensions and the distinction between box feasibility and
+inequality admissibility visible without evaluating either callback.
+"""
+function Base.show(io::IO, prob::ConstrainedSimplexSearch)
+    println(io, "ConstrainedSimplexSearch")
+    println(io, " min/max f(c), c in R^$(prob.ncontrols)")
+    println(io, " subject to $(prob.nconstraints) inequalities g(c) <= 0")
+    print(io, " and lower_bounds <= c <= upper_bounds")
 end

@@ -1,268 +1,219 @@
-# math helpers
+# Geometry and constraint helpers
+
+
 # ------------------------------------------------------------------------------
-export boxcenter
-export inbox
-export modify
+"""
+    boxcenter(lower_bounds, upper_bounds)
+    boxcenter(prob)
 
-export centroid
-export reflect
-export expand
-export contract_out
-export contract_in
-export shrink
-
-export cv
-export isadmissible
-
-
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Pure geometric & algorithmatic functions
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-function boxcenter(lb::Point{N}, ub::Point{N})::Point{N} where {N}
-    return (lb .+ ub) ./ 2.0
+Return the midpoint of every box interval. This helper is used when a neutral
+starting point is needed for a `CenteredSimplex` or for inspecting a problem's
+search domain. It performs no callback evaluation.
+"""
+function boxcenter(lower_bounds::AbstractVector, upper_bounds::AbstractVector)
+    length(lower_bounds) == length(upper_bounds) ||
+        throw(DimensionMismatch("bound vectors must have equal length."))
+    return (Vector{Float64}(lower_bounds) .+ Vector{Float64}(upper_bounds)) ./ 2.0
 end
-boxcenter(mp::MinimizeProblem) = boxcenter(mp.lb, mp.ub)
-# ------------------------------------------------------------------------------
-function inbox(x::Point{N}, lb::Point{N}, ub::Point{N})::Bool where {N}
-    return all(lb .<= x) && all(x .<= ub)
+
+function boxcenter(prob::ConstrainedSimplexSearch)
+    return boxcenter(prob.lower_bounds, prob.upper_bounds)
 end
+
+
 # ------------------------------------------------------------------------------
-function inbox(x::Point{N}, mp::MinimizeProblem{N,P,Q})::Bool where {N,P,Q}
-    return inbox(x, mp.lb, mp.ub)
+"""
+    inbox(point, lower_bounds, upper_bounds)
+    inbox(point, prob)
+
+Return whether every coordinate lies inside or on the box boundary. The simplex
+builders and public admissibility check use this helper before any objective
+evaluation because box feasibility is a prerequisite for admissibility.
+"""
+function inbox(
+    point::AbstractVector,
+    lower_bounds::AbstractVector,
+    upper_bounds::AbstractVector,
+)
+    length(point) == length(lower_bounds) == length(upper_bounds) || return false
+    return all(lower_bounds .<= point) && all(point .<= upper_bounds)
 end
-# ------------------------------------------------------------------------------
-function modify(x::Point{N}, i::Int, v::Real)::Point{N} where {N}
-    return SV64{N}([(j == i) ? v : x[j] for j in 1:N])
+
+function inbox(point::AbstractVector, prob::ConstrainedSimplexSearch)
+    return inbox(point, prob.lower_bounds, prob.upper_bounds)
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    centroid(xs::AbsV{Point{N}})::Point{N}
+    centroid(vertices)
 
-Compute the centroid of a set of points.
+Return the coordinate-wise mean of row-wise simplex vertices. The solver uses
+this operation on all vertices except the current worst point to construct
+reflection and contraction candidates.
 """
-function centroid(xs::AbsV{Point{N}})::Point{N} where {N}
-    return sum(xs) / length(xs)
+function centroid(vertices::AbstractMatrix)
+    size(vertices, 1) > 0 || throw(ArgumentError("vertices must not be empty."))
+    return vec(sum(vertices; dims = 1)) ./ size(vertices, 1)
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    centroid(xs::AbsV{Point{N}}, i::Int)::Point{N}
+    reflect(center, worst, factor)
 
-Compute the centroid of a set of points, exoluding the i-th point.
+Reflect `worst` through `center` by a positive factor. This is the first
+candidate move considered in each `optimize` iteration; the solver clips and
+guardedly evaluates the returned point before deciding whether to accept it.
 """
-function centroid(xs::AbsV{Point{N}}, i::Int)::Point{N} where {N}
-    n = length(xs)
-    return sum(xs[1:i-1;i+1:n]) / (n - 1)
+function reflect(center::AbstractVector, worst::AbstractVector, factor::Real)
+    return Vector{Float64}(center .+ factor .* (center .- worst))
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    reflect(xo::Point{N}, xw::Point{N}, α::Real)::Point{N}
+    expand(center, reflected, factor)
 
-Compute the reflection of worst point `xw` w.r.t. the centroid `xo` of a simplex
-, where `α` > 0 is the reflection coefficient.
-
-Formula: `xr = xo + α * (xo - xw)`
+Move farther from `center` through an improving reflected point. `optimize`
+uses this geometry only after reflection improves on the current best point and
+then applies the same constraint-first objective guard to the candidate.
 """
-function reflect(xo::Point{N}, xw::Point{N}, α::Real)::Point{N} where {N}
-    return xo .+ α .* (xo .- xw)
+function expand(center::AbstractVector, reflected::AbstractVector, factor::Real)
+    return Vector{Float64}(center .+ factor .* (reflected .- center))
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    expand(xo::Point{N}, xr::Point{N}, γ::Real)::Point{N}
+    contract_out(center, reflected, factor)
 
-Compute the expansion of point `xr` w.r.t. the centroid `xo` of a simplex, where
-`γ` > 1 is the expansion coefficient.
-
-Formula: `xe = xo + γ * (xr - xo)`
+Move from `center` partway toward a mediocre reflected point. This outside
+contraction is used by `optimize` when reflection is no better than the
+second-worst simplex score.
 """
-function expand(xo::Point{N}, xr::Point{N}, γ::Real)::Point{N} where {N}
-    return xo .+ γ .* (xr .- xo)
+function contract_out(center::AbstractVector, reflected::AbstractVector, factor::Real)
+    return Vector{Float64}(center .+ factor .* (reflected .- center))
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    contract_out(xo::Point{N}, xr::Point{N}, β::Real)::Point{N}
+    contract_in(center, worst, factor)
 
-Compute the outside contraction of the reflection point `xr` w.r.t. the centroid
-`xo` of a simplex, where `0 < ρ <= 0.5` is the contraction coefficient.
-
-Formula: `xc_out = xo + β * (xr - xo)`
+Move from `center` partway toward the current worst point. This inside
+contraction is used by `optimize` after a reflection scores worse than the
+current worst vertex.
 """
-function contract_out(xo::Point{N}, xr::Point{N}, ρ::Real)::Point{N} where {N}
-    return xo .+ ρ .* (xr .- xo)
+function contract_in(center::AbstractVector, worst::AbstractVector, factor::Real)
+    return Vector{Float64}(center .+ factor .* (worst .- center))
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    contract_in(xo::Point{N}, xw::Point{N}, ρ::Real)::Point{N} where {N}
+    shrink(point, best, factor)
 
-Compute the inside contraction of the worst point `xw` w.r.t. the centroid `xo`
-of a simplex, where `0 < ρ <= 0.5` is the contraction coefficient.
+Move one point toward the best simplex point. `optimize` applies this operation
+to every vertex when both reflection and contraction fail, then clips the new
+simplex into the box before its next guarded evaluation.
 """
-function contract_in(xo::Point{N}, xw::Point{N}, ρ::Real)::Point{N} where {N}
-    return xo .+ ρ .* (xw .- xo)
+function shrink(point::AbstractVector, best::AbstractVector, factor::Real)
+    return Vector{Float64}(best .+ factor .* (point .- best))
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    shrink(x::Point{N}, xbest::Point{N}, σ::Real)::Point{N} where {N}
+    maxedgelen(vertices)
 
-Shrink the point `x` towards the best point `xbest` by a factor `σ` ∈ (0,1).
+Return the largest infinity-norm edge length in a row-wise simplex. `optimize`
+records this quantity as its control-space error and compares it with
+`control_tolerance` when determining convergence.
 """
-function shrink(x::Point{N}, xbest::Point{N}, σ::Real)::Point{N} where {N}
-    return xbest .+ σ .* (x .- xbest)
-end
-# ------------------------------------------------------------------------------
-"""
-    shrink!(spl::Vec{Point{N}}, ibest::Int, σ::Real)::Nothing where {N}
-
-Shrink all points in the simplex `spl` towards the best point `spl[ibest]` by a
-factor `σ` ∈ (0,1).
-"""
-function shrink!(
-    spl::Vec{Point{N}},
-    ibest::Int,
-    σ::Real,
-) where {N}
-    for j in 1:N+1
-        if j != ibest
-            spl[j] = shrink(spl[j], spl[ibest], σ)
-        end
+function maxedgelen(vertices::AbstractMatrix)
+    edge_max = 0.0
+    for i in axes(vertices, 1), j in (i + 1):size(vertices, 1)
+        edge_max = max(edge_max, norm(view(vertices, i, :) .- view(vertices, j, :), Inf))
     end
-    return nothing
+    return edge_max
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    maxedgelen(spl::Vec{Point{N}})::F64
+    simplexvolume(vertices)
 
-Compute the maximum edge length of a simplex `spl`.
+Return the geometric volume of a row-wise N-dimensional simplex. Initial
+simplex validation uses this determinant formula to reject degenerate geometry
+before constraints or objectives are evaluated.
 """
-function maxedgelen(spl::Vec{Point{N}})::F64 where {N}
-    lenMax = -Inf
-    for i in 1:N+1, j in 1:N+1
-        if i != j
-            Δ = norm(spl[i] - spl[j], Inf)
-            lenMax = max(lenMax, Δ)
-        end
-    end
-    return lenMax
+function simplexvolume(vertices::AbstractMatrix)
+    ncontrols = size(vertices, 2)
+    size(vertices, 1) == ncontrols + 1 ||
+        throw(DimensionMismatch("a simplex must have ncontrols + 1 rows."))
+    edges = vertices[2:end, :] .- vertices[1, :]'
+    return abs(det(edges)) / factorial(ncontrols)
 end
+
+
 # ------------------------------------------------------------------------------
 """
-    rebound!(spl::Vec{Point{N}}, lb::Point{N}, ub::Point{N})::Nothing where {N}
+    constraintviolation(point, constraint_values, lower_bounds, upper_bounds)
+    constraintviolation(point, prob)
 
-Rebound all points in the simplex `spl` within the box constraints `lb` and `ub`
+Return the L1 positive-part violation of inequality and box constraints. The
+solver uses this score to guide a wholly non-admissible simplex toward the
+admissible set without calling the objective at any invalid point.
+
+The problem overload evaluates only the constraint callback. Constraints must
+therefore be finite throughout the feasible box, while the objective remains
+guarded and is not used by this function.
 """
-function rebound!(
-    spl::Vec{Point{N}},
-    lb::Point{N},
-    ub::Point{N},
-)::Nothing where {N}
-    for i in 1:N+1
-        spl[i] = clamp.(spl[i], lb, ub)
-    end
-    return nothing
+function constraintviolation(
+    point::AbstractVector,
+    constraint_values::AbstractVector,
+    lower_bounds::AbstractVector,
+    upper_bounds::AbstractVector,
+)
+    inequality = sum((max(0.0, value) for value in constraint_values); init = 0.0)
+    below = sum((max(0.0, lower_bounds[i] - point[i]) for i in eachindex(point)); init = 0.0)
+    above = sum((max(0.0, point[i] - upper_bounds[i]) for i in eachindex(point)); init = 0.0)
+    return Float64(inequality + below + above)
+end
+
+function constraintviolation(point::AbstractVector, prob::ConstrainedSimplexSearch)
+    length(point) == prob.ncontrols ||
+        throw(DimensionMismatch("point must have length ncontrols."))
+    checked = clamp.(Vector{Float64}(point), prob.lower_bounds, prob.upper_bounds)
+    values = _evaluate_constraints(prob, checked)
+    return constraintviolation(point, values, prob.lower_bounds, prob.upper_bounds)
 end
 
 
-
-
-
-
-
-
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Constraint violation functions & feasibility check
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-function _cv_g(gvals::AbsV)::F64
-    return sum(Float64, max.(0.0, gvals))
-end
-function _cv_h(hvals::AbsV, δ::Real, R::Real)::F64
-    term1 = sum( Float64, max.(0.0, abs.(hvals) .- δ) )
-    term2 = R * Float64(sum(abs2, hvals))
-    return term1 + term2
-end
-function _cv_lub(x::Point{N}, lb::Point{N}, ub::Point{N})::F64 where {N}
-    term1 = max.(0.0, lb .- x) |> sum
-    term2 = max.(0.0, x .- ub) |> sum
-    return term1 + term2
-end
-# ------------------------------------------------------------------------------
-function cv(
-    x    ::Point{N},
-    gvals::AbsV,
-    hvals::AbsV,
-    lb   ::Point{N},
-    ub   ::Point{N},
-    δ    ::Real,
-    R    ::Real,
-)::F64 where {N}
-    res = 0.0    
-    if length(gvals) > 0
-        _val = _cv_g(gvals)
-        @assert !isnan(_val) "NaN found in g(x) <=0 constraint function"
-        res += _val
-    end
-    if length(hvals) > 0
-        _val = _cv_h(hvals, δ, R)
-        @assert !isnan(_val) "NaN found in h(x) == 0 constraint function"
-        res += _val
-    end
-    res += _cv_lub(x, lb, ub)
-    return res
-end
 # ------------------------------------------------------------------------------
 """
-    cv(x::Point{N}, mp::MinimizeProblem{N,P,Q})::F64 where {N,P,Q}
+    isadmissible(point, constraint_values, lower_bounds, upper_bounds)
+    isadmissible(point, prob)
 
-Computes the value of constraint violation (CV) function at point `x` for the
-non-linear constraint function `g(x) <= 0`; equality constraint function
-`h(x) = 0`; and box constraints `lb <= x <= ub`.
-"""
-function cv(x::Point{N}, mp::MinimizeProblem{N,P,Q})::F64 where {N,P,Q}
-    return cv(x, mp.g(x), mp.h(x), mp.lb, mp.ub, mp.δ, mp.R)
-end
-# ------------------------------------------------------------------------------
-function isadmissible(
-    x    ::Point{N},
-    gvals::AbsV,
-    hvals::AbsV,
-    lb   ::Point{N},
-    ub   ::Point{N},
-    δ    ::Real,
-)::Bool where {N}
-    if any(gvals .> 0.0)
-        return false
-    end
-    if any(abs.(hvals) .> δ)
-        return false
-    end
-    if any(x .< lb) || any(x .> ub)
-        return false
-    end
-    return true
-end
-# ------------------------------------------------------------------------------
-"""
-    isadmissible(x::Point{N}, mp::MinimizeProblem{N,P,Q},δ::Real)::Bool
-
-Check if point `x` is feasible w.r.t. the constraints of the minimization
-problem `mp`.
+Return whether a point lies in the feasible box and satisfies every inequality
+`g(c) <= 0`. The solver's guarded evaluation path uses the value-based method
+after checking callback shape and finiteness; the problem overload is provided
+for users and never calls the objective.
 """
 function isadmissible(
-    x::Point{N}, 
-    mp::MinimizeProblem{N,P,Q}, 
-    δ::Real
-)::Bool where {N,P,Q}
-    return isadmissible(x, mp.g(x), mp.h(x), mp.lb, mp.ub, δ)
+    point::AbstractVector,
+    constraint_values::AbstractVector,
+    lower_bounds::AbstractVector,
+    upper_bounds::AbstractVector,
+)
+    return inbox(point, lower_bounds, upper_bounds) && all(constraint_values .<= 0.0)
 end
-# ------------------------------------------------------------------------------
 
-
-
-
-
-
-
-
-
-
- 
+function isadmissible(point::AbstractVector, prob::ConstrainedSimplexSearch)
+    length(point) == prob.ncontrols ||
+        throw(DimensionMismatch("point must have length ncontrols."))
+    inbox(point, prob) || return false
+    values = _evaluate_constraints(prob, Vector{Float64}(point))
+    return all(values .<= 0.0)
+end
